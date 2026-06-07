@@ -2,13 +2,9 @@ import time
 from datetime import datetime, timezone
 
 import pandas as pd
-import plotly.express as px
-import plotly.io as pio
 import requests
 import streamlit as st
 from sqlalchemy import create_engine, text
-
-pio.renderers.default = "svg"
 
 
 st.set_page_config(
@@ -35,8 +31,7 @@ CREATE TABLE IF NOT EXISTS stock_prices (
     ma_7 DOUBLE PRECISION,
     ma_30 DOUBLE PRECISION,
     volatility_7 DOUBLE PRECISION,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (ticker, date)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -61,7 +56,10 @@ def get_database_url():
     url = str(url).strip()
 
     if not url:
-        st.error("尚未設定 DATABASE_URL。請到 Streamlit Cloud → Settings → Secrets 填入 Supabase connection string。")
+        st.error(
+            "尚未設定 DATABASE_URL。請到 Streamlit Cloud → Settings → Secrets "
+            "填入 Supabase connection string。"
+        )
         st.stop()
 
     return url
@@ -77,12 +75,35 @@ def initialize_tables(engine):
         conn.execute(text(CREATE_STOCK_TABLE_SQL))
         conn.execute(text(CREATE_NEWS_TABLE_SQL))
 
+        conn.execute(text("ALTER TABLE stock_prices ADD COLUMN IF NOT EXISTS open DOUBLE PRECISION;"))
+        conn.execute(text("ALTER TABLE stock_prices ADD COLUMN IF NOT EXISTS high DOUBLE PRECISION;"))
+        conn.execute(text("ALTER TABLE stock_prices ADD COLUMN IF NOT EXISTS low DOUBLE PRECISION;"))
+        conn.execute(text("ALTER TABLE stock_prices ADD COLUMN IF NOT EXISTS close DOUBLE PRECISION;"))
+        conn.execute(text("ALTER TABLE stock_prices ADD COLUMN IF NOT EXISTS volume BIGINT;"))
+        conn.execute(text("ALTER TABLE stock_prices ADD COLUMN IF NOT EXISTS daily_return DOUBLE PRECISION;"))
+        conn.execute(text("ALTER TABLE stock_prices ADD COLUMN IF NOT EXISTS ma_7 DOUBLE PRECISION;"))
+        conn.execute(text("ALTER TABLE stock_prices ADD COLUMN IF NOT EXISTS ma_30 DOUBLE PRECISION;"))
+        conn.execute(text("ALTER TABLE stock_prices ADD COLUMN IF NOT EXISTS volatility_7 DOUBLE PRECISION;"))
+        conn.execute(text("ALTER TABLE stock_prices ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;"))
+
+        conn.execute(text("ALTER TABLE news_sentiment ADD COLUMN IF NOT EXISTS published_at TIMESTAMP;"))
+        conn.execute(text("ALTER TABLE news_sentiment ADD COLUMN IF NOT EXISTS source TEXT;"))
+        conn.execute(text("ALTER TABLE news_sentiment ADD COLUMN IF NOT EXISTS title TEXT;"))
+        conn.execute(text("ALTER TABLE news_sentiment ADD COLUMN IF NOT EXISTS sentiment TEXT;"))
+        conn.execute(text("ALTER TABLE news_sentiment ADD COLUMN IF NOT EXISTS sentiment_score DOUBLE PRECISION;"))
+        conn.execute(text("ALTER TABLE news_sentiment ADD COLUMN IF NOT EXISTS related_event TEXT;"))
+        conn.execute(text("ALTER TABLE news_sentiment ADD COLUMN IF NOT EXISTS possible_market_impact TEXT;"))
+        conn.execute(text("ALTER TABLE news_sentiment ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;"))
+
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "idx_stock_prices_ticker_date ON stock_prices (ticker, date);"
+            )
+        )
+
 
 def fetch_stock_from_yahoo(ticker):
-    """
-    Real cloud ETL source:
-    Yahoo Finance chart API, executed on Streamlit Cloud.
-    """
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
 
     params = {
@@ -100,7 +121,10 @@ def fetch_stock_from_yahoo(ticker):
     response = requests.get(url, params=params, headers=headers, timeout=30)
 
     if response.status_code != 200:
-        raise RuntimeError(f"Yahoo Finance returned HTTP {response.status_code} for {ticker}: {response.text[:200]}")
+        raise RuntimeError(
+            f"Yahoo Finance returned HTTP {response.status_code} for {ticker}: "
+            f"{response.text[:200]}"
+        )
 
     data = response.json()
     chart = data.get("chart", {})
@@ -121,7 +145,10 @@ def fetch_stock_from_yahoo(ticker):
         raise RuntimeError(f"No timestamp or quote data returned for {ticker}")
 
     df = pd.DataFrame({
-        "date": [datetime.fromtimestamp(ts, tz=timezone.utc).date() for ts in timestamps],
+        "date": [
+            datetime.fromtimestamp(ts, tz=timezone.utc).date()
+            for ts in timestamps
+        ],
         "ticker": ticker,
         "open": quote.get("open", []),
         "high": quote.get("high", []),
@@ -164,6 +191,7 @@ def extract_stock_data():
 
     for ticker in TICKERS:
         logs.append(f"Fetching {ticker} from Yahoo Finance chart API...")
+
         try:
             df = fetch_stock_from_yahoo(ticker)
             frames.append(df)
@@ -174,7 +202,10 @@ def extract_stock_data():
         time.sleep(1)
 
     if not frames:
-        raise RuntimeError("No stock data was fetched from Yahoo Finance chart API.\n" + "\n".join(logs))
+        raise RuntimeError(
+            "No stock data was fetched from Yahoo Finance chart API.\n"
+            + "\n".join(logs)
+        )
 
     result = pd.concat(frames, ignore_index=True)
     result["date"] = pd.to_datetime(result["date"]).dt.date
@@ -185,11 +216,12 @@ def extract_stock_data():
 def score_sentiment(title):
     positive_words = [
         "support", "growth", "improves", "strong", "demand", "investment",
-        "benefit", "surge", "gain", "optimism", "positive"
+        "benefit", "surge", "gain", "optimism", "positive", "record", "beats",
     ]
+
     negative_words = [
         "risk", "uncertainty", "pressure", "decline", "weak", "concern",
-        "loss", "negative", "slowdown", "geopolitical"
+        "loss", "negative", "slowdown", "geopolitical", "misses", "falls",
     ]
 
     title_lower = title.lower()
@@ -216,11 +248,6 @@ def score_sentiment(title):
 
 
 def fetch_market_news():
-    """
-    Tries to fetch news from Yahoo Finance search endpoint.
-    If news endpoint fails, this function returns an empty DataFrame.
-    The dashboard can still use the stock ETL successfully.
-    """
     rows = []
 
     headers = {
@@ -231,12 +258,19 @@ def fetch_market_news():
     for ticker in TICKERS:
         try:
             url = "https://query1.finance.yahoo.com/v1/finance/search"
+
             params = {
                 "q": ticker,
                 "quotesCount": 0,
-                "newsCount": 5,
+                "newsCount": 8,
             }
-            response = requests.get(url, params=params, headers=headers, timeout=20)
+
+            response = requests.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=20,
+            )
 
             if response.status_code != 200:
                 continue
@@ -246,6 +280,7 @@ def fetch_market_news():
 
             for item in news_items:
                 title = item.get("title", "")
+
                 if not title:
                     continue
 
@@ -253,7 +288,10 @@ def fetch_market_news():
                 published = item.get("providerPublishTime")
 
                 if published:
-                    published_at = datetime.fromtimestamp(published, tz=timezone.utc)
+                    published_at = datetime.fromtimestamp(
+                        published,
+                        tz=timezone.utc,
+                    )
                 else:
                     published_at = datetime.now(timezone.utc)
 
@@ -266,7 +304,10 @@ def fetch_market_news():
                     "sentiment": sentiment,
                     "sentiment_score": sentiment_score,
                     "related_event": f"{ticker} market news",
-                    "possible_market_impact": f"News related to {ticker} may affect technology stock volatility and investor sentiment.",
+                    "possible_market_impact": (
+                        f"News related to {ticker} may affect technology stock "
+                        "volatility and investor sentiment."
+                    ),
                 })
 
         except Exception:
@@ -279,13 +320,19 @@ def fetch_market_news():
 
     df = pd.DataFrame(rows)
     df = df.drop_duplicates(subset=["title"])
+
     return df
 
 
 def upload_stock_data(engine, stock_df):
     temp_table = "stock_prices_upload_temp"
 
-    stock_df.to_sql(temp_table, engine, if_exists="replace", index=False)
+    stock_df.to_sql(
+        temp_table,
+        engine,
+        if_exists="replace",
+        index=False,
+    )
 
     upsert_sql = f"""
     INSERT INTO stock_prices
@@ -318,7 +365,12 @@ def upload_news_data(engine, news_df):
     with engine.begin() as conn:
         conn.execute(text("TRUNCATE TABLE news_sentiment RESTART IDENTITY;"))
 
-    news_df.to_sql("news_sentiment", engine, if_exists="append", index=False)
+    news_df.to_sql(
+        "news_sentiment",
+        engine,
+        if_exists="append",
+        index=False,
+    )
 
 
 def refresh_cloud_data():
@@ -362,6 +414,7 @@ def load_stock_data():
     """
 
     df = pd.read_sql(query, engine)
+
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"])
 
@@ -387,20 +440,54 @@ def load_news_data():
     """
 
     df = pd.read_sql(query, engine)
+
     if not df.empty:
-        df["published_at"] = pd.to_datetime(df["published_at"]).dt.strftime("%Y-%m-%d %H:%M")
+        df["published_at"] = pd.to_datetime(df["published_at"])
 
     return df
 
 
+def line_chart_from_close(df):
+    chart_df = (
+        df.pivot_table(
+            index="date",
+            columns="ticker",
+            values="close",
+            aggfunc="last",
+        )
+        .sort_index()
+    )
+
+    st.line_chart(chart_df)
+
+
+def line_chart_from_indicator(df, columns):
+    chart_df = (
+        df.set_index("date")[columns]
+        .sort_index()
+    )
+
+    st.line_chart(chart_df)
+
+
+def bar_chart_from_summary(df, value_col):
+    chart_df = df.set_index("ticker")[[value_col]]
+    st.bar_chart(chart_df)
+
+
 st.title("科技股與新聞情緒分析 Dashboard")
-st.write("本版本會在 Streamlit Cloud 執行 ETL，從 Yahoo Finance API 抓取真實股價，寫入 Supabase，再從 Supabase 讀取資料視覺化。")
+
+st.write(
+    "本版本會在 Streamlit Cloud 執行 ETL，從 Yahoo Finance API 抓取真實股價，"
+    "寫入 Supabase，再從 Supabase 讀取資料視覺化。"
+)
 
 engine = get_engine()
 initialize_tables(engine)
 
 stock_df = load_stock_data()
 news_df = load_news_data()
+
 
 with st.sidebar:
     st.header("雲端資料庫控制")
@@ -411,20 +498,29 @@ with st.sidebar:
             try:
                 result = refresh_cloud_data()
                 st.cache_data.clear()
-                st.success(f"完成。股價資料寫入 {result['stock_rows']} 筆，新聞資料寫入 {result['news_rows']} 筆。")
+                st.success(
+                    f"完成。股價資料寫入 {result['stock_rows']} 筆，"
+                    f"新聞資料寫入 {result['news_rows']} 筆。"
+                )
+
                 with st.expander("ETL logs"):
                     for line in result["logs"]:
                         st.write(line)
+
                 st.rerun()
+
             except Exception as e:
                 st.error("ETL 失敗。請查看錯誤訊息。")
                 st.exception(e)
+
 
 if stock_df.empty:
     st.warning("Supabase 目前沒有股價資料。請先按左側「執行雲端 ETL 並寫入 Supabase」。")
     st.stop()
 
+
 st.success("目前已成功從 Supabase / PostgreSQL 讀取雲端資料。")
+
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "Dashboard 總覽",
@@ -432,6 +528,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "股票比較",
     "新聞與事件",
 ])
+
 
 with tab1:
     latest_date = stock_df["date"].max()
@@ -452,69 +549,58 @@ with tab1:
         avg_return = latest_df["daily_return"].mean() * 100
         st.metric("最新平均日報酬率", f"{avg_return:.2f}%")
 
-    fig = px.line(
-        stock_df,
-        x="date",
-        y="close",
-        color="ticker",
-        title="Stock Price Trend from Supabase Cloud Database",
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    st.subheader("科技股收盤價走勢")
+    line_chart_from_close(stock_df)
 
     if not news_df.empty:
-        sentiment_summary = news_df.groupby("sentiment").size().reset_index(name="count")
-        fig_sentiment = px.pie(
-            sentiment_summary,
-            names="sentiment",
-            values="count",
-            title="News Sentiment Distribution",
+        st.subheader("新聞情緒分布")
+
+        sentiment_summary = (
+            news_df.groupby("sentiment")
+            .size()
+            .reset_index(name="count")
+            .set_index("sentiment")
         )
-        st.plotly_chart(fig_sentiment, use_container_width=True)
+
+        st.bar_chart(sentiment_summary)
+
 
 with tab2:
+    st.subheader("股價走勢與技術指標")
+
     tickers = sorted(stock_df["ticker"].unique())
-    selected = st.multiselect("選擇股票", tickers, default=tickers)
+
+    selected = st.multiselect(
+        "選擇股票",
+        tickers,
+        default=tickers,
+    )
+
     filtered = stock_df[stock_df["ticker"].isin(selected)]
 
-    fig_price = px.line(
-        filtered,
-        x="date",
-        y="close",
-        color="ticker",
-        title="Close Price Trend",
-    )
-    st.plotly_chart(fig_price, use_container_width=True)
+    st.write("收盤價走勢")
+    line_chart_from_close(filtered)
 
-    single = st.selectbox("選擇一檔股票查看移動平均與波動率", tickers)
+    single = st.selectbox(
+        "選擇一檔股票查看移動平均與波動率",
+        tickers,
+    )
+
     single_df = stock_df[stock_df["ticker"] == single].copy()
 
-    ma_df = single_df[["date", "close", "ma_7", "ma_30"]].melt(
-        id_vars="date",
-        var_name="indicator",
-        value_name="value",
-    )
+    st.write(f"{single} 收盤價與移動平均")
+    line_chart_from_indicator(single_df, ["close", "ma_7", "ma_30"])
 
-    fig_ma = px.line(
-        ma_df,
-        x="date",
-        y="value",
-        color="indicator",
-        title=f"{single} Close Price and Moving Averages",
-    )
-    st.plotly_chart(fig_ma, use_container_width=True)
-
-    fig_vol = px.line(
-        single_df,
-        x="date",
-        y="volatility_7",
-        title=f"{single} 7-Day Volatility",
-    )
-    st.plotly_chart(fig_vol, use_container_width=True)
+    st.write(f"{single} 7 日波動率")
+    line_chart_from_indicator(single_df, ["volatility_7"])
 
     with st.expander("查看 Supabase 股價資料"):
         st.dataframe(filtered, use_container_width=True)
 
+
 with tab3:
+    st.subheader("股票比較")
+
     summary = (
         stock_df.sort_values("date")
         .groupby("ticker")
@@ -528,61 +614,91 @@ with tab3:
         .reset_index()
     )
 
-    col1, col2 = st.columns(2)
+    st.write("最新收盤價比較")
+    bar_chart_from_summary(summary, "latest_close")
 
-    with col1:
-        fig_close = px.bar(
-            summary,
-            x="ticker",
-            y="latest_close",
-            title="Latest Close Price",
-        )
-        st.plotly_chart(fig_close, use_container_width=True)
+    st.write("平均每日報酬率比較")
+    bar_chart_from_summary(summary, "average_daily_return")
 
-    with col2:
-        fig_return = px.bar(
-            summary,
-            x="ticker",
-            y="average_daily_return",
-            title="Average Daily Return",
-        )
-        st.plotly_chart(fig_return, use_container_width=True)
-
-    fig_vol = px.bar(
-        summary,
-        x="ticker",
-        y="average_volatility",
-        title="Average 7-Day Volatility",
-    )
-    st.plotly_chart(fig_vol, use_container_width=True)
+    st.write("平均 7 日波動率比較")
+    bar_chart_from_summary(summary, "average_volatility")
 
     st.dataframe(summary, use_container_width=True)
 
+
 with tab4:
+    st.subheader("新聞與國際事件對照")
+
     if news_df.empty:
-        st.info("目前新聞資料表為空。股價資料已可正常展示；若 Yahoo News endpoint 被擋，新聞資料可能不會寫入。")
+        st.info("目前新聞資料表為空。股價資料已可正常展示。")
     else:
+        news_df = news_df.copy()
+        news_df["month"] = news_df["published_at"].dt.strftime("%Y-%m")
+        news_df["date"] = news_df["published_at"].dt.strftime("%Y-%m-%d")
+
+        months = sorted(news_df["month"].dropna().unique())
+
+        selected_month = st.selectbox(
+            "選擇月份查看 sentiment_score",
+            months,
+            index=len(months) - 1 if months else 0,
+        )
+
+        monthly_news = news_df[
+            (news_df["month"] == selected_month)
+            & (news_df["sentiment_score"].notna())
+        ].copy()
+
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.metric("新聞資料筆數", len(news_df))
+            st.metric("該月新聞筆數", len(monthly_news))
 
         with col2:
-            st.metric("主要情緒", news_df["sentiment"].value_counts().idxmax())
+            if not monthly_news.empty:
+                st.metric("主要情緒", monthly_news["sentiment"].value_counts().idxmax())
+            else:
+                st.metric("主要情緒", "N/A")
 
         with col3:
-            st.metric("平均情緒分數", f"{news_df['sentiment_score'].mean():.2f}")
+            if not monthly_news.empty:
+                st.metric("平均情緒分數", f"{monthly_news['sentiment_score'].mean():.2f}")
+            else:
+                st.metric("平均情緒分數", "N/A")
 
-        fig_score = px.bar(
-            news_df,
-            x="published_at",
-            y="sentiment_score",
-            color="sentiment",
-            hover_data=["title", "source", "related_event"],
-            title="News Sentiment Score by Date",
-        )
-        st.plotly_chart(fig_score, use_container_width=True)
+        if monthly_news.empty:
+            st.warning(f"{selected_month} 沒有 sentiment_score 資料。")
+        else:
+            st.write(f"{selected_month} 每日平均 sentiment_score")
 
-        st.dataframe(news_df, use_container_width=True)
+            daily_sentiment = (
+                monthly_news.groupby("date")["sentiment_score"]
+                .mean()
+                .reset_index()
+                .set_index("date")
+            )
 
-st.info("資料流程：Streamlit Cloud 執行 ETL → Yahoo Finance API → 資料清理與指標計算 → Supabase PostgreSQL → Dashboard 視覺化。")
+            st.bar_chart(daily_sentiment)
+
+            st.write("該月新聞明細")
+
+            st.dataframe(
+                monthly_news[
+                    [
+                        "published_at",
+                        "source",
+                        "sentiment",
+                        "sentiment_score",
+                        "title",
+                        "related_event",
+                        "possible_market_impact",
+                    ]
+                ],
+                use_container_width=True,
+            )
+
+
+st.info(
+    "資料流程：Streamlit Cloud 執行 ETL → Yahoo Finance API → 資料清理與指標計算 "
+    "→ Supabase PostgreSQL → Dashboard 視覺化。圖表使用 Streamlit 內建 chart，避免 WebGL 問題。"
+)
