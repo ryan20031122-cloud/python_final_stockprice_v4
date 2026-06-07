@@ -3,9 +3,12 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.express as px
+import plotly.io as pio
 import requests
 import streamlit as st
 from sqlalchemy import create_engine, text
+
+pio.renderers.default = "svg"
 
 
 st.set_page_config(
